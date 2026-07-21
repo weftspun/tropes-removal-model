@@ -80,7 +80,7 @@ jobs:
         run: |
           python -m pip install -U pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install setfit "numpy<2" pandas pyarrow
+          pip install setfit "numpy<2" pandas pyarrow onnx
       - name: Train semantic-trope classifier (SetFit)
         run: python train_tropes.py
       - uses: actions/upload-artifact@v4
@@ -107,7 +107,7 @@ jobs:
           python zst.py -d datalake.tar.zst datalake.tar
           tar -xf datalake.tar
       - name: Install training deps (torch w/ MPS backend, on by default on macOS wheels)
-        run: pip install torch transformers datasets "numpy<2" pandas pyarrow
+        run: pip install torch transformers "accelerate>=1.1.0" datasets "numpy<2" pandas pyarrow
       - name: Train rewriter (Metal/MPS, RAM-capped batch size)
         env: { TRAIN_BATCH_SIZE: "8" }  # 7GB runner; see train_rewriter.py
         run: python train_rewriter.py

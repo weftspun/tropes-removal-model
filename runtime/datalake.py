@@ -112,12 +112,14 @@ def read_table(path):
         return pa.table({name: [] for name in schema.names}, schema=schema)
     if path in PARTITION_COLUMNS:
         part_col = PARTITION_COLUMNS[path]
-        table = ds.dataset(path, format="parquet", partitioning="hive").to_table()
-        # the partition column round-trips as dictionary-encoded from the
-        # Hive directory names; cast back to the plain string schema so
-        # downstream code (pandas merges, etc.) sees an ordinary column.
-        return table.set_column(table.schema.get_field_index(part_col), part_col,
-                                 table.column(part_col).cast(pa.string())).select(schema.names)
+        has_data = any(f.endswith(".parquet") for _, _, files in os.walk(path) for f in files)
+        if not has_data:
+            return pa.table({name: [] for name in schema.names}, schema=schema)
+        table = ds.dataset(
+            path, format="parquet",
+            partitioning=ds.partitioning(pa.schema([(part_col, pa.string())]), flavor="hive"),
+        ).to_table()
+        return table.select(schema.names)
     return pq.read_table(path)
 
 

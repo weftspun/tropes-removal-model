@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: tropes-gate
+        name: tropes gate (AI-writing style detector)
+        entry: python gate.py
+        language: system
+        types_or: [markdown, text]
+        pass_filenames: true

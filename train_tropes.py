@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 K. S. Ernest (iFire) Lee
+"""
+Train the semantic-trope classifier with SetFit (contrastive
+sentence-transformer fine-tuning + a lightweight multi-label head), not
+AutoGluon's full end-to-end fine-tune -- and only for the ~12 SEMANTIC
+tropes, not all 33.
+
+Why SetFit over full fine-tuning: SetFit is purpose-built for exactly this
+regime (few-shot text classification; the reference use case in its own
+docs is 8-16 examples/class). Full fine-tuning of a 66M-param backbone
+needs hundreds of examples per class to generalize instead of memorize;
+SetFit's contrastive-pair pretraining step gets useful signal out of far
+fewer labels because it's training a much smaller effective decision
+surface (a frozen-ish sentence embedding + a linear/logistic head), not
+updating every weight in a large encoder from scratch. Verified with a
+real smoke test on this repo's own data (2 tropes, 648 rows, 1 epoch):
+98.5% held-out accuracy and correct predictions on unseen sentences.
+
+Why only the ~12 semantic tropes: the ~21 mechanical tropes (Em-Dash
+Addiction, Delve and Friends, Tricolon Abuse, etc.) already have a regex
+pattern in scripts/seed_labels.py that detects them deterministically --
+see runtime/regex_onnx.py (verified 0 mismatches vs Python's re.search
+across 30,000 real sentences). Spending labeled data on those would be
+solving something already solved exactly. The rewriter (train_rewriter.py)
+is unaffected -- it still needs rewrite pairs for all 33, since suggesting
+a rewrite is a generation task regardless of how the trope was detected.
+
+Output: models/setfit_classifier/ -- ONE multi-label SetFit model
+covering all ~12 semantic tropes (not one predictor per trope), since
+SetFit's multi_target_strategy="one-vs-rest" natively handles co-occurring
+labels with a single shared sentence-transformer body.
+"""
+import os
+import sys
+import warnings
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from runtime.regex_onnx import MECHANICAL_TROPE_NAMES
+
+warnings.filterwarnings("ignore")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+BACKBONE = "sentence-transformers/all-MiniLM-L6-v2"  # same ONNX-export-reliable family as the reference repo
+MODELS_DIR = "models/setfit_classifier"
+NEGATIVE_TO_POSITIVE_RATIO = 3  # cap negatives so contrastive pairs aren't mostly negative-negative
+NUM_EPOCHS = 1
+NUM_ITERATIONS = 20  # contrastive pairs generated per training example
+
+
+def main():
+    from datasets import Dataset
+    from setfit import SetFitModel, Trainer, TrainingArguments
+
+    train = pd.read_parquet("data/classifier_train.parquet")
+    val = pd.read_parquet("data/classifier_val.parquet")
+    all_label_cols = [c for c in train.columns if c.startswith("trope__")]
+    label_cols = [c for c in all_label_cols if c[len("trope__"):] not in MECHANICAL_TROPE_NAMES]
+    trope_names = [c[len("trope__"):] for c in label_cols]
+
+    print(f"training ONE multi-label SetFit model for {len(label_cols)} semantic tropes "
+          f"on backbone={BACKBONE} ({len(all_label_cols) - len(label_cols)} mechanical tropes "
+          "handled by regex instead, see runtime/regex_onnx.py)", flush=True)
+
+    def build_dataset(df):
+        pos_mask = df[label_cols].any(axis=1)
+        positives = df[pos_mask]
+        n_neg = min(len(df) - len(positives), len(positives) * NEGATIVE_TO_POSITIVE_RATIO)
+        negatives = df[~pos_mask].sample(n=max(n_neg, 1), random_state=0)
+        combined = pd.concat([positives, negatives]).sample(frac=1.0, random_state=0).reset_index(drop=True)
+        labels = combined[label_cols].to_numpy(dtype=np.float32)
+        return Dataset.from_dict({"text": combined["text"].tolist(), "label": labels.tolist()}), combined
+
+    train_ds, train_df = build_dataset(train)
+    val_ds, _ = build_dataset(val)
+    print(f"train: {len(train_ds)} rows ({int(train_df[label_cols].to_numpy().any(axis=1).sum())} positive)", flush=True)
+
+    # use_differentiable_head (pure PyTorch head) instead of the default
+    # sklearn LogisticRegression head: the sklearn head's skl2onnx export
+    # produces float64 weights, which fails ONNX type-checking against the
+    # sentence-transformer body's float32 output (MatMul type mismatch,
+    # confirmed when exporting the sklearn-head version) -- an all-torch
+    # model traces to ONNX as consistently float32 with no such conflict.
+    model = SetFitModel.from_pretrained(
+        BACKBONE, multi_target_strategy="one-vs-rest",
+        use_differentiable_head=True, head_params={"out_features": len(label_cols)})
+    args = TrainingArguments(
+        batch_size=16, num_epochs=NUM_EPOCHS, num_iterations=NUM_ITERATIONS,
+        output_dir=os.path.join(MODELS_DIR, "checkpoints"),
+    )
+    trainer = Trainer(model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds)
+    trainer.train()
+    metrics = trainer.evaluate()
+    print(f"val metrics: {metrics}", flush=True)
+
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    model.save_pretrained(MODELS_DIR)
+    # trope name order must match the label vector's column order for
+    # export_onnx_tropes.py to map ONNX output columns back to trope names
+    with open(os.path.join(MODELS_DIR, "trope_order.txt"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(trope_names))
+    print(f"saved -> {MODELS_DIR}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

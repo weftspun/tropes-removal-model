@@ -1,0 +1,24 @@
+.venv/
+.pixi/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# SetFit/sentence-transformers training scratch output (Trainer output_dir,
+# tensorboard-style run logs) -- not the saved model itself, just checkpoints
+# and logs from intermediate steps.
+checkpoints/
+runs/
+
+# Built/trained artifacts -- not committed; published as GitHub Release
+# assets by .github/workflows/train-release.yml (model.tar.gz,
+# datalake.parquet.zst), same pattern as the reference repo.
+data/
+models/
+onnx_tropes/
+onnx_rewriter/
+*.tar.gz
+*.zst
+
+# ad hoc local scratch files from interactive testing
+scratch_*

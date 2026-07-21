@@ -1,0 +1,51 @@
+name: tropes-gate
+
+# Fast path: PRs only run inference against the already-trained ONNX models,
+# never training. Restores the cached model (keyed on the training/export
+# scripts, same trick as train-release.yml) or downloads it from the latest
+# Release on a cache miss.
+
+on:
+  pull_request:
+    paths: ["**/*.md", "**/*.mdx", "**/*.txt", "**/*.rst"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Cache trained ONNX models
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            onnx_tropes
+            onnx_rewriter
+          key: models-v1-${{ hashFiles('train_tropes.py', 'train_rewriter.py', 'export_onnx_tropes.py', 'runtime/regex_onnx.py', 'scripts/seed_labels.py', 'seeds/trope.parquet') }}
+
+      - name: Restore models from latest release
+        if: steps.cache.outputs.cache-hit != 'true'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release download --pattern "model.tar.zst" -D . || { echo "no release model found -- run train-release.yml first"; exit 1; }
+          pip install zstandard
+          python zst.py -d model.tar.zst model.tar
+          tar -xf model.tar
+
+      - name: Install runtime deps (no torch; onnxruntime + tokenizer-only transformers)
+        run: pip install onnxruntime onnxruntime-extensions optimum transformers pyarrow "numpy<2"
+
+      - name: Run gate against PR diff
+        run: |
+          python gate.py --base-ref "origin/${{ github.base_ref }}" --threshold 0.5 --max-findings 0 | tee gate_report.txt
+
+      - name: Write job summary
+        if: always()
+        run: cat gate_report.txt >> "$GITHUB_STEP_SUMMARY"

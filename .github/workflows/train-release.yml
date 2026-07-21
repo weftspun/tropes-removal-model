@@ -1,0 +1,155 @@
+name: train-release
+
+# Slow path, run manually or on a v* tag: rebuilds the ETNF datalake from
+# public + synthetic sources, trains the SetFit semantic-trope classifier
+# (Ubuntu, CPU) and the rewriter (macos-14, Metal/MPS -- see
+# train-rewriter-metal below), merges the classifier with the regex branch
+# (runtime/regex_onnx.py) into ONE ONNX model, and publishes everything as
+# Release assets (model.tar.zst, datalake.tar.zst) for tropes-gate.yml to
+# consume.
+#
+# Prereqs: ANTHROPIC_API_KEY secret if scripts/synth_generate.py should
+# regenerate synthetic examples; the hand-authored fallback in
+# scripts/synth_seed_examples.py runs with no API key.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish model/datalake assets to"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  PYVER: "3.11"
+
+jobs:
+  build-datalake:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        run: echo "tag=${{ github.event.inputs.release_tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install datalake deps
+        run: pip install pyarrow pandas datasets zstandard anthropic
+      - name: Build the ETNF datalake
+        env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+        run: |
+          python scripts/seed_tropes.py
+          python scripts/fetch_corpus.py
+          python scripts/seed_labels.py
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            python scripts/synth_generate.py
+          else
+            echo "no ANTHROPIC_API_KEY -- using hand-authored synthetic fallback"
+            python scripts/synth_seed_examples.py
+          fi
+          python scripts/build_datalake.py
+      - name: Package + compress datalake
+        run: python zst.py -c data datalake.tar.zst
+      - uses: actions/upload-artifact@v4
+        with: { name: datalake, path: datalake.tar.zst }
+
+  # Ubuntu, CPU (SetFit trains in minutes even on CPU -- unlike the old
+  # AutoGluon path, this isn't GPU-restricted on macOS either; stays on
+  # Linux for the extra RAM headroom, revisit if training time grows).
+  train-classifiers:
+    needs: build-datalake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/download-artifact@v4
+        with: { name: datalake, path: . }
+      - name: Unpack datalake
+        run: |
+          pip install zstandard
+          python zst.py -d datalake.tar.zst datalake.tar
+          tar -xf datalake.tar
+      - name: Install training deps (CPU torch -- CI needs no GPU)
+        run: |
+          python -m pip install -U pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install setfit "numpy<2" pandas pyarrow
+      - name: Train semantic-trope classifier (SetFit)
+        run: python train_tropes.py
+      - uses: actions/upload-artifact@v4
+        with: { name: classifiers, path: models/setfit_classifier }
+
+  # macos-14 (M1, free hosted runner): only 3 vCPU / 7GB RAM / 14GB disk, so
+  # this job is deliberately kept lean -- it trains ONLY the plain-torch
+  # flan-t5-small rewriter (no AutoGluon here, so MPS actually engages), with
+  # a smaller batch size than the reference Ubuntu-sized default so training
+  # + the AdamW optimizer state stay comfortably under the 7GB ceiling.
+  # See train_rewriter.py's device/batch-size auto-selection.
+  train-rewriter-metal:
+    needs: build-datalake
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/download-artifact@v4
+        with: { name: datalake, path: . }
+      - name: Unpack datalake
+        run: |
+          pip install zstandard
+          python zst.py -d datalake.tar.zst datalake.tar
+          tar -xf datalake.tar
+      - name: Install training deps (torch w/ MPS backend, on by default on macOS wheels)
+        run: pip install torch transformers datasets "numpy<2" pandas pyarrow
+      - name: Train rewriter (Metal/MPS, RAM-capped batch size)
+        env: { TRAIN_BATCH_SIZE: "8" }  # 7GB runner; see train_rewriter.py
+        run: python train_rewriter.py
+      - uses: actions/upload-artifact@v4
+        with: { name: rewriter, path: models/rewriter }
+
+  export-onnx:
+    needs: [train-classifiers, train-rewriter-metal]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/download-artifact@v4
+        with: { name: classifiers, path: models/setfit_classifier }
+      - uses: actions/download-artifact@v4
+        with: { name: rewriter, path: models/rewriter }
+      - name: Install export deps (CPU torch -- ONNX export needs no GPU)
+        run: |
+          python -m pip install -U pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers "numpy<2" pandas onnx onnxruntime onnxruntime-extensions onnxscript \
+                      "optimum[onnx,onnxruntime]" setfit skl2onnx onnxconverter-common zstandard
+      - name: Export both to ONNX
+        run: python export_onnx_tropes.py
+      - name: Package models
+        run: |
+          tar -cf model.tar onnx_tropes onnx_rewriter
+          python zst.py -c model.tar model.tar.zst
+      - uses: actions/upload-artifact@v4
+        with: { name: model, path: model.tar.zst }
+
+  publish:
+    needs: [build-datalake, export-onnx]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Upload release assets
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release upload "${{ needs.build-datalake.outputs.tag }}" \
+            artifacts/datalake/datalake.tar.zst \
+            artifacts/model/model.tar.zst \
+            --clobber

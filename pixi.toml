@@ -24,11 +24,23 @@ pandas = "*"
 pre-commit = "*"
 anthropic = "*"      # LLM client for scripts/synth_generate.py (swappable)
 pytest = "*"
-torch = ">=2.6.0, <3"
 setfit = ">=1.1.3, <2"
 accelerate = ">=1.1.0"  # required by transformers' Trainer/Seq2SeqTrainer
 skl2onnx = ">=1.20.0, <2"
 onnxconverter-common = ">=1.16.0, <2"
+
+# torch is platform-specific: win-64/linux-64 pull CUDA wheels from PyTorch's
+# own index (plain PyPI wheels for those platforms are CPU-only and silently
+# ignore a local GPU); osx-arm64 uses the default PyPI wheel, which already
+# bundles MPS/Metal support.
+[target.win-64.pypi-dependencies]
+torch = { version = ">=2.6.0, <3", index = "https://download.pytorch.org/whl/cu124" }
+
+[target.linux-64.pypi-dependencies]
+torch = { version = ">=2.6.0, <3", index = "https://download.pytorch.org/whl/cu124" }
+
+[target.osx-arm64.pypi-dependencies]
+torch = ">=2.6.0, <3"
 
 [tasks]
 gpu-check = "python -c \"import torch;print('torch',torch.__version__);print('cuda',torch.cuda.is_available())\""

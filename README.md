@@ -40,8 +40,9 @@ pre-commit install
 ```
 
 `gate.py` reads the ONNX models from `onnx_tropes/` and `onnx_rewriter/`
-(built by `train-release.yml` and cached/restored by `tropes-gate.yml`; see
-[CLAUDE.md](CLAUDE.md) for the full local build pipeline).
+(built locally and cached/restored from a GitHub Release by
+`tropes-gate.yml`; see [CLAUDE.md](CLAUDE.md) for the full local build
+pipeline).
 
 ## License
 

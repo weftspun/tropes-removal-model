@@ -76,11 +76,10 @@ it's small and hand-authored.
   column). See `export_onnx_tropes.py`.
 - Must run locally on macOS via onnxruntime's CoreML EP (Metal/ANE);
   `runtime/infer.py` handles provider selection and logs which one was used.
-- Training on a macOS GHA runner (`macos-14`, free tier: 3 vCPU / 7GB RAM)
-  only makes sense for `train_rewriter.py` (plain torch, MPS auto-detected
-  by HF's Trainer). `train_tropes.py` (SetFit) could plausibly run there
-  too now that it's not AutoGluon, but hasn't been moved -- re-evaluate if
-  training time becomes a bottleneck. See train-release.yml.
+- No GHA training workflow -- `train_tropes.py`, `train_rewriter.py`, and
+  `export_onnx_tropes.py` are run locally (pixi env) and the resulting
+  `onnx_tropes/`, `onnx_rewriter/` are published to a GitHub Release by hand
+  for `tropes-gate.yml` to restore.
 - Keep every parquet file under 100MB and the whole repo under 2GB.
   `sentence_trope_label`, `sentence_rewrite`, and `rewrite_pairs` are
   Hive-partitioned directories (one small file per trope_id/trope_name) via

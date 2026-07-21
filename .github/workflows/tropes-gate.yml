@@ -2,8 +2,9 @@ name: tropes-gate
 
 # Fast path: PRs only run inference against the already-trained ONNX models,
 # never training. Restores the cached model (keyed on the training/export
-# scripts, same trick as train-release.yml) or downloads it from the latest
-# Release on a cache miss.
+# scripts) or downloads it from the latest Release on a cache miss. Models
+# are trained locally (see CLAUDE.md) and published to a Release by hand --
+# there is no training GHA workflow.
 
 on:
   pull_request:
@@ -34,7 +35,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          gh release download --pattern "model.tar.zst" -D . || { echo "no release model found -- run train-release.yml first"; exit 1; }
+          gh release download --pattern "model.tar.zst" -D . || { echo "no release model found -- train locally and publish a release first"; exit 1; }
           pip install zstandard
           python zst.py -d model.tar.zst model.tar
           tar -xf model.tar

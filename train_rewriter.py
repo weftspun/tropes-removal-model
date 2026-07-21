@@ -85,7 +85,7 @@ def main():
     )
     trainer = Seq2SeqTrainer(
         model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds,
-        data_collator=collator, tokenizer=tok,
+        data_collator=collator, processing_class=tok,
     )
     trainer.train()
     trainer.save_model(OUT_DIR)

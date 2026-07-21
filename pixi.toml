@@ -14,7 +14,7 @@ pyarrow = "*"        # parquet read/write for the ETNF datalake
 
 [pypi-dependencies]
 autogluon = "*"
-transformers = "*"   # Seq2SeqTrainer for the rewriter, outside AutoGluon
+transformers = ">=4.41, <4.50"   # Seq2SeqTrainer for the rewriter; upper bound because setfit imports transformers.training_args.default_logdir, removed in transformers 5.x
 datasets = "*"       # pulls public AI-vs-human corpora (e.g. HC3) for scripts/fetch_corpus.py
 onnx = "*"
 onnxruntime = "*"
@@ -26,6 +26,7 @@ anthropic = "*"      # LLM client for scripts/synth_generate.py (swappable)
 pytest = "*"
 torch = ">=2.6.0, <3"
 setfit = ">=1.1.3, <2"
+accelerate = ">=1.1.0"  # required by transformers' Trainer/Seq2SeqTrainer
 skl2onnx = ">=1.20.0, <2"
 onnxconverter-common = ">=1.16.0, <2"
 

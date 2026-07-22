@@ -10,17 +10,19 @@ For every sentence in every target file, runs ONE merged ONNX model
 (onnx_tropes/merged_model.onnx -- see export_onnx_tropes.py) that scores 31
 of the 33 tropes in a single call: a deterministic regex branch for the ~23
 mechanical tropes, a SetFit classifier branch for the ~8 genuinely semantic
-ones. The remaining 2 (Content Duplication, Historical Analogy Stacking) are
-document-scoped-but-still-mechanical -- neither a single-sentence regex nor
-a fuzzy judgment call -- and are handled by a separate deterministic
-whole-document pass, see runtime/cross_sentence.py. Any trope above its
-threshold becomes a Finding with an exact file/line/char span, the matching
-trope's name + category + description, and a suggested rewrite from the
-ONNX rewriter -- the SetFit-classified tropes use their own per-trope
-calibrated threshold (onnx_tropes/thresholds.json, see train_tropes.py)
-since one global cutoff isn't calibrated the same across classes; anything
-else falls back to --threshold. Never emits a bare document-level score --
-every flag is pinned to one sentence and one named trope.
+ones (1 of those 8, Short Punchy Fragments, is explicitly disabled at
+runtime -- see DISABLED_TROPE_NAMES). The remaining 2 (Content Duplication,
+Historical Analogy Stacking) are document-scoped-but-still-mechanical --
+neither a single-sentence regex nor a fuzzy judgment call -- and are handled
+by a separate deterministic whole-document pass, see runtime/cross_sentence.py.
+Any trope above its threshold becomes a Finding with an exact file/line/char
+span, the matching trope's name + category + description, and a suggested
+rewrite from the ONNX rewriter -- the SetFit-classified tropes use their own
+per-trope calibrated threshold (onnx_tropes/thresholds.json, see
+train_tropes.py) since one global cutoff isn't calibrated the same across
+classes; anything else falls back to --threshold. Never emits a bare
+document-level score -- every flag is pinned to one sentence and one named
+trope.
 
 Exits non-zero (fails the gate) if total findings exceed --max-findings.
 """
@@ -42,6 +44,20 @@ MERGED_MODEL_PATH = os.path.join("onnx_tropes", "merged_model.onnx")
 THRESHOLDS_PATH = os.path.join("onnx_tropes", "thresholds.json")
 ONNX_REWRITER_DIR = "onnx_rewriter"
 TEXT_EXTENSIONS = {".md", ".mdx", ".txt", ".rst"}
+
+# Known-unreliable at this repo's current data scale: 0.00 recall at any
+# threshold that clears a real-world precision bar. Every fix attempted this
+# round -- unconstrained threshold tuning (overfit a 10-example val sample,
+# false-fired on real ordinary sentences), 4 k-NN/exemplar-distance variants
+# including triplet-loss fine-tuning, a curated AI-buzzword regex, and a
+# spaCy dependency-parse + WordNet abstract-noun check -- landed on the same
+# tradeoff (recall keeps dropping as precision is chased up) or hit a hard
+# architecture wall (spaCy/WordNet aren't ONNX-embeddable, would need a new
+# non-ONNX runtime dependency). Disabled explicitly rather than left to an
+# unreachable threshold, so it reads as a deliberate decision, not a bug --
+# see CLAUDE.md for the full account. Re-enable once there's materially more
+# labeled data for it.
+DISABLED_TROPE_NAMES = {"Short Punchy Fragments"}
 
 
 class Finding:
@@ -185,7 +201,7 @@ def scan_file(path, classifier, rewriter, threshold):
             # why) -- score_all() still returns 0.0 for them (neither the
             # regex nor SetFit branch of merged_model.onnx owns these
             # columns), but skip explicitly rather than rely on that.
-            if trope_name in CROSS_SENTENCE_TROPE_NAMES:
+            if trope_name in CROSS_SENTENCE_TROPE_NAMES or trope_name in DISABLED_TROPE_NAMES:
                 continue
             if conf >= classifier.threshold_for(trope_name, threshold):
                 findings.append(Finding(

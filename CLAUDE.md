@@ -75,6 +75,27 @@ it's small and hand-authored.
   float64 weights, which fails ONNX type-checking (`MatMul` dtype
   mismatch) against the sentence-transformer body's float32 output; an
   all-torch model traces to ONNX as consistently float32.
+- **Per-trope decision thresholds, picked by best F1 on val subject to a
+  MIN_PRECISION=0.75 floor** (see `train_tropes.py`), not one global 0.5 --
+  a single multi-label head's per-class score distributions aren't
+  calibrated against each other. **Short Punchy Fragments is a known,
+  deliberately deferred weak spot**: no threshold clears the precision
+  floor on this repo's val data, so it falls back to the safe default
+  (0.5) and stays quiet rather than guess. Before touching its threshold
+  again, know what's already been tried and failed: unconstrained
+  best-F1 threshold search (overfit a 10-example val sample, false-fired
+  on real ordinary sentences like "There are many different search
+  engines available, such as Google, Bing, and Yahoo." in a 100-document
+  real-web audit); 4 separate k-NN/exemplar-distance variants (1-NN,
+  k-NN majority vote, nearest-positive-vs-nearest-negative, and that same
+  approach after triplet-loss fine-tuning the embeddings) -- all landed
+  at ~85-87% exact-match test accuracy with perfect recall but weak,
+  unmovable precision (0.32-0.67), versus 96.6% for the shipped
+  differentiable-head approach. The consistent pattern (recall always
+  perfect, precision always weak, no variant moves it) points at labeled
+  data scarcity (70-160 positives/trope) as the real constraint, not a
+  wrong algorithm choice -- more hand-authored positive examples is the
+  actual next lever here, not another classifier architecture.
 - **RegexFullMatch pattern portability (RE2, not Python `re`) --
   see `runtime/regex_onnx.py`'s `_to_re2_full_match` docstring for the
   full reasoning**: RE2 has no backreferences (`\1`) -- unroll them into

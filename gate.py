@@ -58,6 +58,7 @@ TEXT_EXTENSIONS = {".md", ".mdx", ".txt", ".rst"}
 # see CLAUDE.md for the full account. Re-enable once there's materially more
 # labeled data for it.
 DISABLED_TROPE_NAMES = {"Short Punchy Fragments"}
+MAX_SCORED_CHARS = 1800
 
 
 class Finding:
@@ -115,6 +116,20 @@ class TropeClassifier:
         """Returns {trope_name: confidence} for every trope in one call."""
         if not self.available:
             return {name: 0.0 for name in self.names}
+        # Defensive input cap: the generated ONNX tokenizer branch has no
+        # exposed truncation/max_length attribute (checked directly on the
+        # compiled BertTokenizer node), so a "sentence" long enough to
+        # exceed MiniLM's 512-position embedding table crashes onnxruntime
+        # entirely (ONNXRuntimeError: "Attempting to broadcast an axis by a
+        # dimension other than 1") instead of just truncating like a normal
+        # tokenizer would. Found via a real ~319-word run-on "sentence" in
+        # this repo's own CLAUDE.md (markdown structure with no
+        # sentence-ending punctuation for split_sentences to key off) --
+        # see also the split_sentences() markdown-awareness note. ~1800
+        # chars is a generous safety margin under 512 tokens even for dense,
+        # punctuation-light text.
+        if len(text) > MAX_SCORED_CHARS:
+            text = text[:MAX_SCORED_CHARS]
         out = self.session.run(None, {"text": np.array([text], dtype=object)})[0]
         return dict(zip(self.names, out[0].tolist()))
 

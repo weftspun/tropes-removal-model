@@ -50,3 +50,41 @@ jobs:
       - name: Write job summary
         if: always()
         run: cat gate_report.txt >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs the same .pre-commit-config.yaml hooks a local `prek install` (or
+  # `pre-commit install`) runs, so CI and local dev never drift apart on
+  # what "passing" means -- the "gate" job above re-implements the diff-only
+  # check by hand (python gate.py --base-ref) for a tighter PR-diff-scoped
+  # run; this job is the parity check that the hook definition itself still
+  # works, over every markdown/text file in the repo.
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Cache trained ONNX models
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            onnx_tropes
+            onnx_rewriter
+          key: models-v1-${{ hashFiles('train_tropes.py', 'train_rewriter.py', 'export_onnx_tropes.py', 'runtime/regex_onnx.py', 'scripts/seed_labels.py', 'seeds/trope.parquet') }}
+
+      - name: Restore models from latest release
+        if: steps.cache.outputs.cache-hit != 'true'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release download --pattern "model.tar.zst" -D . || { echo "no release model found -- train locally and publish a release first"; exit 1; }
+          pip install zstandard
+          python zst.py -d model.tar.zst model.tar
+          tar -xf model.tar
+
+      - name: Install runtime deps (no torch; onnxruntime + tokenizer-only transformers)
+        run: pip install onnxruntime onnxruntime-extensions optimum transformers pyarrow "numpy<2" prek
+
+      - name: Run pre-commit hooks (prek)
+        run: prek run --all-files --show-diff-on-failure --color always

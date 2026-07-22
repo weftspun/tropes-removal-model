@@ -7,3 +7,8 @@ repos:
         language: system
         types_or: [markdown, text]
         pass_filenames: true
+        # This repo's own docs describe the tropes by name/example (e.g. the
+        # word "delve" itself, as an example of the "Delve and Friends"
+        # trope) -- excluded rather than treated as a real finding, the same
+        # way a linter typically excludes its own docs from self-application.
+        exclude: ^(README\.md|CLAUDE\.md)$

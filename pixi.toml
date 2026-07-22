@@ -14,12 +14,18 @@ pyarrow = "*"        # parquet read/write for the ETNF datalake
 
 [pypi-dependencies]
 autogluon = "*"
-transformers = ">=4.41, <4.50"   # Seq2SeqTrainer for the rewriter; upper bound because setfit imports transformers.training_args.default_logdir, removed in transformers 5.x
+transformers = ">=4.46, <4.50"   # lower bound: sentence-transformers' Trainer (setfit's dependency) unconditionally passes processing_class= to HF's Trainer, which only accepts it from 4.46 on. upper bound: setfit imports transformers.training_args.default_logdir, removed in transformers 5.x.
+# NOTE: optimum 2.1.0's ORTModelForSeq2SeqLM.generate() only threads
+# attention_mask into the merged decoder's encoder_attention_mask on
+# transformers<4.46 -- incompatible with the >=4.46 floor above, which
+# training needs. gate.py's Rewriter and export_onnx_tropes.py's rewriter
+# smoke test both work around this by driving decoding manually (forward()
+# in a loop) instead of calling optimum's generate().
 datasets = "*"       # pulls public AI-vs-human corpora (e.g. HC3) for scripts/fetch_corpus.py
 onnx = "*"
 onnxruntime = "*"
 onnxruntime-extensions = "*"  # gen_processing_models() builds the tokenizer branch of merged_model.onnx
-optimum = { version = "*", extras = ["onnx", "onnxruntime"] }  # "exporters" extra was folded into these in optimum 2.x
+optimum = { version = "*", extras = ["onnx", "onnxruntime"] }  # "exporters" extra was folded into these in optimum 2.x; pinned to 2.1.0 by optimum-onnx's own optimum<2.2 requirement
 pandas = "*"
 pre-commit = "*"
 anthropic = "*"      # LLM client for scripts/synth_generate.py (swappable)

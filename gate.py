@@ -88,15 +88,46 @@ class Rewriter:
             from transformers import AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(ONNX_REWRITER_DIR)
             self.model = ORTModelForSeq2SeqLM.from_pretrained(
-                ONNX_REWRITER_DIR, provider="CPUExecutionProvider")
+                ONNX_REWRITER_DIR, provider="CPUExecutionProvider", use_cache=False)
 
-    def rewrite(self, trope_name, sentence_text):
+    def rewrite(self, trope_name, sentence_text, max_new_tokens=64):
+        """Greedy-decodes by calling the model's forward() directly in a loop
+        instead of HF's generate(). optimum 2.1.0's ORTModelForSeq2SeqLM only
+        threads attention_mask into the merged decoder's encoder_attention_mask
+        on transformers<4.46 (its own version-gated prepare_inputs_for_generation
+        branch); this repo pins transformers>=4.46 for SetFit's Trainer
+        integration (see pixi.toml), so generate() raises "encoder_attention_mask
+        ... not provided". Driving decoding ourselves sidesteps that
+        generate()/optimum version-skew entirely -- forward() itself takes
+        attention_mask correctly regardless of transformers version."""
+        import torch
+
         if not self.available:
             return "(rewriter model unavailable)"
         prompt = f"remove {trope_name.lower()}: {sentence_text}"
         enc = self.tokenizer(prompt, return_tensors="pt")
-        ids = self.model.generate(**enc, max_new_tokens=64, num_beams=1)
-        return self.tokenizer.decode(ids[0], skip_special_tokens=True)
+        decoder_start_id = self.model.config.decoder_start_token_id
+        eos_id = self.model.config.eos_token_id
+
+        # No KV-cache reuse -- re-run the decoder over the full sequence so
+        # far every step (fine at this scale: rewrites cap at max_new_tokens,
+        # a couple dozen tokens in practice). Sidesteps having to hand-derive
+        # the merged decoder_with_past ONNX graph's exact past_key_values
+        # shape/branch-flag contract, which isn't part of any public optimum
+        # API and shifts across export/optimum versions.
+        decoder_input_ids = torch.tensor([[decoder_start_id]])
+        generated = []
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                out = self.model(
+                    input_ids=enc["input_ids"], attention_mask=enc["attention_mask"],
+                    decoder_input_ids=decoder_input_ids, use_cache=False)
+                next_id = out.logits[:, -1].argmax(dim=-1)
+                if next_id.item() == eos_id:
+                    break
+                generated.append(next_id.item())
+                decoder_input_ids = torch.cat([decoder_input_ids, next_id[:, None]], dim=-1)
+        return self.tokenizer.decode(generated, skip_special_tokens=True)
 
 
 def changed_files(base_ref):

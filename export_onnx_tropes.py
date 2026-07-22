@@ -35,6 +35,7 @@ import warnings
 
 import numpy as np
 import onnx
+import onnx.version_converter
 from onnx import TensorProto, helper
 
 warnings.filterwarnings("ignore")
@@ -114,6 +115,19 @@ def _merge_tokenizer_and_classifier(tokenizer_model, classifier_model):
         raise RuntimeError(
             f"couldn't map every classifier input {clf_inputs} to a tokenizer output "
             f"(mapped {[m[1] for m in io_map]}) -- inspect the exported graph and adjust io_map above")
+    # onnxruntime_extensions' gen_processing_models() and the SetFit export
+    # (torch/skl2onnx, opset=14) are built against different onnx package
+    # versions/opsets -- merge_models requires an exact ir_version AND
+    # matching opset per domain, even though neither graph uses anything
+    # version-specific (no IR8+ local functions, and this classifier graph is
+    # a plain MatMul/Gemm/Sigmoid MLP that converts cleanly). Upgrade the
+    # classifier's default-domain opset to match the tokenizer branch's,
+    # then align ir_version to the newer of the two.
+    target_opset = next(op.version for op in tokenizer_model.opset_import if op.domain == "")
+    classifier_model = onnx.version_converter.convert_version(classifier_model, target_opset)
+    ir_version = max(tokenizer_model.ir_version, classifier_model.ir_version)
+    tokenizer_model.ir_version = ir_version
+    classifier_model.ir_version = ir_version
     return onnx.compose.merge_models(
         tokenizer_model, classifier_model, io_map=io_map, prefix1="tok_", prefix2="clf_")
 
@@ -162,6 +176,21 @@ def _pad_to_canonical(model, source_output_name, source_names, order, model_pref
     return helper.make_model(graph, opset_imports=list(model.opset_import)), padded_name
 
 
+def _rename_tensor(graph, old_name, new_name):
+    """Rename a tensor throughout a graph -- its declaration (input/output/
+    initializer) plus every node reference -- in place."""
+    for collection in (graph.input, graph.output):
+        for value_info in collection:
+            if value_info.name == old_name:
+                value_info.name = new_name
+    for initializer in graph.initializer:
+        if initializer.name == old_name:
+            initializer.name = new_name
+    for node in graph.node:
+        node.input[:] = [new_name if n == old_name else n for n in node.input]
+        node.output[:] = [new_name if n == old_name else n for n in node.output]
+
+
 def _combine_regex_and_semantic(regex_model, semantic_model_padded, semantic_output_name, order):
     """Both graphs take the same `text` input and each already outputs a
     full [1, 33] vector, zero in the columns they don't own -- Add
@@ -171,7 +200,19 @@ def _combine_regex_and_semantic(regex_model, semantic_model_padded, semantic_out
     nodes.append(helper.make_node("Add", ["trope_scores", semantic_output_name], ["final_trope_scores"],
                                    name="combine_regex_and_semantic"))
 
-    opsets = {op.domain: op.version for op in list(regex_model.opset_import) + list(semantic_model_padded.opset_import)}
+    # max(), not last-wins: RegexFullMatch needs domain "" opset>=20 (see
+    # runtime/regex_onnx.py), and a naive dict comprehension over both
+    # models' opset_imports would silently let the semantic branch's lower
+    # opset for the same domain clobber that requirement. Also fold "ai.onnx"
+    # into "" -- gen_processing_models() emits both as separate opset_import
+    # entries for what's really the same default domain, and onnxruntime's
+    # op-schema lookup treats them as aliases; keeping two entries lets it
+    # silently resolve RegexFullMatch (domain "") against the lower
+    # "ai.onnx" version instead of the "" one this dict computes.
+    opsets = {}
+    for op in list(regex_model.opset_import) + list(semantic_model_padded.opset_import):
+        domain = "" if op.domain == "ai.onnx" else op.domain
+        opsets[domain] = max(op.version, opsets.get(domain, 0))
     graph = helper.make_graph(
         nodes, "merged_tropes",
         [helper.make_tensor_value_info("text", TensorProto.STRING, [None])],
@@ -240,6 +281,14 @@ def export_classifiers():
 
     padded_semantic, padded_name = _pad_to_canonical(
         merged_semantic, "semantic_probs", semantic_names, order, model_prefix="sm_")
+    # padded_semantic's only remaining graph input is the tokenizer branch's
+    # original "text" input, doubly-prefixed ("tok_" by merge_models, "sm_"
+    # by add_prefix above) -- rename it back to "text" so it lines up with
+    # the single "text" input _combine_regex_and_semantic declares for the
+    # final graph; otherwise this branch's nodes reference a name nothing
+    # ever produces.
+    [text_input] = padded_semantic.graph.input
+    _rename_tensor(padded_semantic.graph, text_input.name, "text")
     final_model = _combine_regex_and_semantic(regex_model, padded_semantic, padded_name, order)
 
     onnx.save(final_model, MERGED_MODEL_PATH)
@@ -251,13 +300,26 @@ def export_rewriter():
         print("no trained rewriter found under models/rewriter/, skipping", flush=True)
         return
 
+    import shutil
     from optimum.exporters.onnx import main_export
 
+    # main_export() only overwrites the files its current task produces; a
+    # stale decoder_with_past_model.onnx/decoder_model_merged.onnx left over
+    # from a prior "-with-past" export would otherwise linger here, and
+    # ORTModelForSeq2SeqLM.from_pretrained() auto-discovers and prefers those
+    # over the plain decoder_model.onnx this run actually intends to produce.
+    shutil.rmtree(ONNX_REWRITER_DIR, ignore_errors=True)
     os.makedirs(ONNX_REWRITER_DIR, exist_ok=True)
+    # Plain (no "-with-past") task: gate.py's Rewriter and this file's own
+    # smoke test below both decode by recomputing the full sequence each
+    # step (see their docstrings/comments) rather than reusing a KV cache, so
+    # there's no upside to the merged decoder_with_past graph -- and real
+    # downside, since its use_cache_branch/past-shape contract isn't part of
+    # any public optimum API and has proven fragile to drive manually.
     main_export(
         model_name_or_path="models/rewriter",
         output=ONNX_REWRITER_DIR,
-        task="text2text-generation-with-past",
+        task="text2text-generation",
         opset=17,
     )
 
@@ -267,19 +329,46 @@ def export_rewriter():
 
     tok = AutoTokenizer.from_pretrained("models/rewriter")
     torch_model = AutoModelForSeq2SeqLM.from_pretrained("models/rewriter").eval()
-    ort_model = ORTModelForSeq2SeqLM.from_pretrained(ONNX_REWRITER_DIR, provider="CPUExecutionProvider")
+    ort_model = ORTModelForSeq2SeqLM.from_pretrained(
+        ONNX_REWRITER_DIR, provider="CPUExecutionProvider", use_cache=False)
 
     fixture = "remove em-dash addiction: The problem -- and this is the part nobody talks about -- is scale."
     enc = tok(fixture, return_tensors="pt")
 
     with torch.no_grad():
         torch_ids = torch_model.generate(**enc, max_new_tokens=64, num_beams=1)
-    ort_ids = ort_model.generate(**enc, max_new_tokens=64, num_beams=1)
-
-    match = torch.equal(torch_ids, torch.as_tensor(ort_ids))
     print(f"rewriter torch: {tok.decode(torch_ids[0], skip_special_tokens=True)!r}", flush=True)
-    print(f"rewriter onnx : {tok.decode(ort_ids[0], skip_special_tokens=True)!r}", flush=True)
-    assert match, "ONNX rewriter greedy decode diverges from torch generate()"
+
+    # Not ort_model.generate(): optimum 2.1.0's ORTModelForSeq2SeqLM only
+    # threads attention_mask into the merged decoder's encoder_attention_mask
+    # on transformers<4.46 (its own version-gated prepare_inputs_for_generation
+    # branch), but this repo pins transformers>=4.46 for SetFit's Trainer
+    # integration (see pixi.toml) -- generate() raises "encoder_attention_mask
+    # ... not provided" under that pin. Driving greedy decoding via forward()
+    # directly (same approach as gate.py's Rewriter.rewrite()) sidesteps the
+    # version-skew and gives a real end-to-end parity check instead of relying
+    # solely on main_export()'s per-tensor diffs above.
+    # No KV-cache reuse -- see gate.py's Rewriter.rewrite() for why: avoids
+    # hand-deriving the merged decoder_with_past ONNX graph's exact
+    # past_key_values shape/branch-flag contract.
+    decoder_start_id = ort_model.config.decoder_start_token_id
+    eos_id = ort_model.config.eos_token_id
+    decoder_input_ids = torch.tensor([[decoder_start_id]])
+    ort_generated = []
+    with torch.no_grad():
+        for _ in range(64):
+            out = ort_model(
+                input_ids=enc["input_ids"], attention_mask=enc["attention_mask"],
+                decoder_input_ids=decoder_input_ids, use_cache=False)
+            next_id = out.logits[:, -1].argmax(dim=-1)
+            if next_id.item() == eos_id:
+                break
+            ort_generated.append(next_id.item())
+            decoder_input_ids = torch.cat([decoder_input_ids, next_id[:, None]], dim=-1)
+
+    torch_generated = [t for t in torch_ids[0].tolist() if t not in (decoder_start_id, eos_id)]
+    print(f"rewriter onnx : {tok.decode(ort_generated, skip_special_tokens=True)!r}", flush=True)
+    assert ort_generated == torch_generated, "ONNX rewriter greedy decode diverges from torch generate()"
     print("REWRITER VALIDATION OK", flush=True)
     tok.save_pretrained(ONNX_REWRITER_DIR)
 

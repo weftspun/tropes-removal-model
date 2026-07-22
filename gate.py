@@ -13,11 +13,14 @@ mechanical tropes, a SetFit classifier branch for the ~8 genuinely semantic
 ones. The remaining 2 (Content Duplication, Historical Analogy Stacking) are
 document-scoped-but-still-mechanical -- neither a single-sentence regex nor
 a fuzzy judgment call -- and are handled by a separate deterministic
-whole-document pass, see runtime/cross_sentence.py. Any trope above
---threshold becomes a Finding with an exact file/line/char span, the
-matching trope's name + category + description, and a suggested rewrite
-from the ONNX rewriter. Never emits a bare document-level score -- every
-flag is pinned to one sentence and one named trope.
+whole-document pass, see runtime/cross_sentence.py. Any trope above its
+threshold becomes a Finding with an exact file/line/char span, the matching
+trope's name + category + description, and a suggested rewrite from the
+ONNX rewriter -- the SetFit-classified tropes use their own per-trope
+calibrated threshold (onnx_tropes/thresholds.json, see train_tropes.py)
+since one global cutoff isn't calibrated the same across classes; anything
+else falls back to --threshold. Never emits a bare document-level score --
+every flag is pinned to one sentence and one named trope.
 
 Exits non-zero (fails the gate) if total findings exceed --max-findings.
 """
@@ -36,6 +39,7 @@ from runtime.infer import session_for
 from runtime.sentence_split import split_sentences
 
 MERGED_MODEL_PATH = os.path.join("onnx_tropes", "merged_model.onnx")
+THRESHOLDS_PATH = os.path.join("onnx_tropes", "thresholds.json")
 ONNX_REWRITER_DIR = "onnx_rewriter"
 TEXT_EXTENSIONS = {".md", ".mdx", ".txt", ".rst"}
 
@@ -78,12 +82,28 @@ class TropeClassifier:
             print(f"[gate] {MERGED_MODEL_PATH} not found -- no findings will fire until it's built "
                   "(see export_onnx_tropes.py)", file=sys.stderr)
 
+        # Per-trope decision thresholds for the SetFit-classified tropes (see
+        # train_tropes.py) -- a single multi-label head's per-class score
+        # distributions aren't calibrated against each other, so one global
+        # threshold either misses real signal on some tropes or over-fires
+        # on others. Mechanical/cross-sentence tropes aren't in this file
+        # (their scores are already ~0/1, not a tuned probability) and fall
+        # back to --threshold.
+        self.thresholds = {}
+        if os.path.isfile(THRESHOLDS_PATH):
+            import json
+            with open(THRESHOLDS_PATH, encoding="utf-8") as fh:
+                self.thresholds = json.load(fh)
+
     def score_all(self, text):
         """Returns {trope_name: confidence} for every trope in one call."""
         if not self.available:
             return {name: 0.0 for name in self.names}
         out = self.session.run(None, {"text": np.array([text], dtype=object)})[0]
         return dict(zip(self.names, out[0].tolist()))
+
+    def threshold_for(self, trope_name, default):
+        return self.thresholds.get(trope_name, default)
 
 
 class Rewriter:
@@ -167,7 +187,7 @@ def scan_file(path, classifier, rewriter, threshold):
             # columns), but skip explicitly rather than rely on that.
             if trope_name in CROSS_SENTENCE_TROPE_NAMES:
                 continue
-            if conf >= threshold:
+            if conf >= classifier.threshold_for(trope_name, threshold):
                 findings.append(Finding(
                     file=path, line=line_of(sentence.char_start, text),
                     char_start=sentence.char_start, char_end=sentence.char_end,

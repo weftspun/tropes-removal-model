@@ -346,6 +346,16 @@ def export_classifiers():
     onnx.save(final_model, MERGED_MODEL_PATH)
     print(f"saved -> {MERGED_MODEL_PATH} (regex + semantic merged)", flush=True)
 
+    # Per-trope decision thresholds (see train_tropes.py) travel with the
+    # merged model, not the training checkpoint -- gate.py's runtime
+    # environment doesn't have setfit/torch installed, only onnxruntime, so
+    # this has to be a plain JSON file it can read directly.
+    thresholds_src = os.path.join(CLASSIFIER_MODEL_DIR, "thresholds.json")
+    if os.path.isfile(thresholds_src):
+        import shutil
+        shutil.copy(thresholds_src, os.path.join(ONNX_TROPES_DIR, "thresholds.json"))
+        print(f"copied -> {ONNX_TROPES_DIR}/thresholds.json", flush=True)
+
 
 def export_rewriter():
     if not os.path.isdir("models/rewriter"):

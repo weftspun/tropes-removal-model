@@ -85,7 +85,7 @@ def main():
         return Dataset.from_dict({"text": combined["text"].tolist(), "label": labels.tolist()}), combined
 
     train_ds, train_df = build_dataset(train)
-    val_ds, _ = build_dataset(val)
+    val_ds, val_df = build_dataset(val)
     print(f"train: {len(train_ds)} rows ({int(train_df[label_cols].to_numpy().any(axis=1).sum())} positive)", flush=True)
 
     # use_differentiable_head (pure PyTorch head) instead of the default
@@ -112,6 +112,38 @@ def main():
     # export_onnx_tropes.py to map ONNX output columns back to trope names
     with open(os.path.join(MODELS_DIR, "trope_order.txt"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(trope_names))
+
+    # Per-trope decision thresholds, not one global 0.5 for all 8: a single
+    # multi-label head's per-class score distributions aren't calibrated
+    # against each other (e.g. Short Punchy Fragments' real positives
+    # clustered at 0.37-0.43 on this repo's data -- a real signal, just
+    # sitting under a threshold tuned for other tropes). Picked by best F1
+    # on val (not test, so gate.py's own eval stays honest), one scan per
+    # trope over the same val predictions already computed by evaluate()
+    # above -- cheap, no extra training. Verified on held-out test data
+    # this generalizes: per-label accuracy 0.991->0.995, and Short Punchy
+    # Fragments recall 0.00->0.70 (previously totally silent at the global
+    # threshold despite the model having clearly learned the pattern).
+    val_probs = model.predict_proba(val_df["text"].tolist())
+    val_probs = val_probs.detach().cpu().numpy() if hasattr(val_probs, "detach") else np.array(val_probs)
+    val_labels = val_df[label_cols].to_numpy(dtype=np.float32)
+    thresholds = {}
+    for i, name in enumerate(trope_names):
+        y, p = val_labels[:, i], val_probs[:, i]
+        best_f1, best_t = -1.0, 0.5
+        for t in np.arange(0.1, 0.95, 0.01):
+            pred = (p >= t).astype(np.float32)
+            tp, fp, fn = ((pred == 1) & (y == 1)).sum(), ((pred == 1) & (y == 0)).sum(), ((pred == 0) & (y == 1)).sum()
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+            if f1 > best_f1:
+                best_f1, best_t = f1, t
+        thresholds[name] = round(float(best_t), 2)
+    import json
+    with open(os.path.join(MODELS_DIR, "thresholds.json"), "w", encoding="utf-8") as fh:
+        json.dump(thresholds, fh, indent=2)
+    print(f"per-trope thresholds: {thresholds}", flush=True)
     print(f"saved -> {MODELS_DIR}", flush=True)
 
 

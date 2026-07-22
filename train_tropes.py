@@ -120,10 +120,21 @@ def main():
     # sitting under a threshold tuned for other tropes). Picked by best F1
     # on val (not test, so gate.py's own eval stays honest), one scan per
     # trope over the same val predictions already computed by evaluate()
-    # above -- cheap, no extra training. Verified on held-out test data
-    # this generalizes: per-label accuracy 0.991->0.995, and Short Punchy
-    # Fragments recall 0.00->0.70 (previously totally silent at the global
-    # threshold despite the model having clearly learned the pattern).
+    # above -- cheap, no extra training.
+    #
+    # Unconstrained best-F1 search was verified to generalize on this repo's
+    # own held-out test split, but a real-web audit against 100 genuinely
+    # unseen AI-generated documents caught it overfitting anyway: Short
+    # Punchy Fragments' precision estimate (0.67) came from only 10 val
+    # positives -- too small a sample for the resulting low threshold (0.27)
+    # to be trustworthy -- and it false-fired on ordinary, non-fragment
+    # sentences in the wild ("There are many different search engines
+    # available, such as Google, Bing, and Yahoo." is not a fragment).
+    # MIN_PRECISION rules out thresholds whose val precision estimate is too
+    # shaky to act on; among those that clear it, still prefer best F1
+    # rather than max precision, so a trope doesn't get pinned needlessly
+    # conservative when it has plenty of clean signal.
+    MIN_PRECISION = 0.75
     val_probs = model.predict_proba(val_df["text"].tolist())
     val_probs = val_probs.detach().cpu().numpy() if hasattr(val_probs, "detach") else np.array(val_probs)
     val_labels = val_df[label_cols].to_numpy(dtype=np.float32)
@@ -136,6 +147,8 @@ def main():
             tp, fp, fn = ((pred == 1) & (y == 1)).sum(), ((pred == 1) & (y == 0)).sum(), ((pred == 0) & (y == 1)).sum()
             prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
             rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            if prec < MIN_PRECISION:
+                continue
             f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
             if f1 > best_f1:
                 best_f1, best_t = f1, t

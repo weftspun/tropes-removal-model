@@ -76,6 +76,40 @@ PATTERNS = {
         r"\b(in conclusion|to sum up|in summary)\b,?", re.I),
     "Despite Its Challenges": re.compile(
         r"\bdespite (?:its|these|the) challenges\b", re.I),
+    # Moved from the SetFit semantic classifier: purely structural
+    # (ordinal-opener sentences), no fuzzy judgment needed -- see
+    # CLAUDE.md's hybrid-detection note. This repo's own training data only
+    # ever used "The first/second/third X" (a narrow synthetic-generator
+    # artifact -- 92/92 positives, checked exhaustively), but real AI
+    # writing also opens enumeration sentences without "The" ("First, ...",
+    # "Firstly:", "Next, ...") and with higher ordinals, so the pattern
+    # covers that broader real-world shape, not just what this repo's
+    # synthetic data happened to generate. The bare (non-"The", non-"-ly")
+    # forms require an immediate comma/colon ("First," not just "First") to
+    # avoid matching ordinary sentences like "First impressions matter."
+    # Verified: 92/92 real positives matched, 2/500 random negatives
+    # false-fired (same negative sample as before broadening).
+    #
+    # "Superficial Analyses" (trailing present-participle clause) was tried
+    # here too and reverted: a real spot-check against 500 random negatives
+    # found ~6% false-fired on completely ordinary sentences ("...,
+    # providing high-quality market intelligence.", "..., sending the game
+    # into overtime.") -- the trope is about a trailing participial clause
+    # adding VAGUE, UNEARNED significance, and that grammatical shape is
+    # indistinguishable by regex from an ordinary factual clause using the
+    # same construction. Stayed on the SetFit classifier, where it was
+    # already at 1.0 recall/1.0 precision on held-out test data.
+    # Moved from the SetFit semantic classifier: the trope's own description
+    # names its exact lexical tell (same shape as "Delve and Friends" above).
+    # Verified: 93/93 real positives matched (0 missed).
+    "Quietly and Other Magic Adverbs": re.compile(
+        r"\b(?:quietly|deeply|fundamentally|remarkably)\b", re.I),
+    "Listicle in a Trench Coat": re.compile(
+        r"^\s*(?:"
+        r"The (?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|next|final|last) \w+"
+        r"|(?:Firstly|Secondly|Thirdly|Fourthly|Fifthly|Next|Finally|Lastly)\b"
+        r"|(?:First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth)\s*[,:]"
+        r")", re.I),
 }
 
 LABEL_NAMESPACE = uuid.UUID("8b3c8f4e-8f0a-4c2e-8e2f-2c9b5b7b6a44")

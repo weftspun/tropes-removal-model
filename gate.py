@@ -8,8 +8,8 @@ The pre-commit/CI gate entry point.
 
 For every sentence in every target file, runs ONE merged ONNX model
 (onnx_tropes/merged_model.onnx -- see export_onnx_tropes.py) that scores 31
-of the 33 tropes in a single call: a deterministic regex branch for the ~21
-mechanical tropes, a SetFit classifier branch for the ~10 genuinely semantic
+of the 33 tropes in a single call: a deterministic regex branch for the ~23
+mechanical tropes, a SetFit classifier branch for the ~8 genuinely semantic
 ones. The remaining 2 (Content Duplication, Historical Analogy Stacking) are
 document-scoped-but-still-mechanical -- neither a single-sentence regex nor
 a fuzzy judgment call -- and are handled by a separate deterministic

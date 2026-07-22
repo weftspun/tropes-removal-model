@@ -21,7 +21,7 @@ name and description, and a suggested rewrite for every finding.
    (Content Duplication, Historical Analogy Stacking) are also mechanical
    but need cross-sentence state, so they run as a deterministic
    whole-document pass (`runtime/cross_sentence.py`) instead. The remaining
-   ~10 genuinely semantic tropes (False Vulnerability, Grandiose Stakes
+   ~8 genuinely semantic tropes (False Vulnerability, Grandiose Stakes
    Inflation, etc.) go through a SetFit few-shot classifier, since there's
    no lexical tell to write a regex for.
 3. A fine-tuned FLAN-T5-small model suggests a trope-free rewrite for every

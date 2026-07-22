@@ -3,7 +3,7 @@
 """
 Train the semantic-trope classifier with SetFit (contrastive
 sentence-transformer fine-tuning + a lightweight multi-label head), not
-AutoGluon's full end-to-end fine-tune -- and only for the ~10 genuinely
+AutoGluon's full end-to-end fine-tune -- and only for the ~8 genuinely
 SEMANTIC tropes, not all 33.
 
 Why SetFit over full fine-tuning: SetFit is purpose-built for exactly this
@@ -17,7 +17,7 @@ updating every weight in a large encoder from scratch. Verified with a
 real smoke test on this repo's own data (2 tropes, 648 rows, 1 epoch):
 98.5% held-out accuracy and correct predictions on unseen sentences.
 
-Why only ~10 tropes, not ~12: the ~21 mechanical tropes (Em-Dash Addiction,
+Why only ~8 tropes, not ~12: the ~23 mechanical tropes (Em-Dash Addiction,
 Delve and Friends, Tricolon Abuse, etc.) already have a regex pattern in
 scripts/seed_labels.py that detects them deterministically -- see
 runtime/regex_onnx.py (verified 0 mismatches vs Python's re.search across
@@ -33,7 +33,7 @@ by any of this -- it still needs rewrite pairs for all 33, since suggesting
 a rewrite is a generation task regardless of how the trope was detected.
 
 Output: models/setfit_classifier/ -- ONE multi-label SetFit model covering
-the ~10 remaining semantic tropes (not one predictor per trope), since
+the ~8 remaining semantic tropes (not one predictor per trope), since
 SetFit's multi_target_strategy="one-vs-rest" natively handles co-occurring
 labels with a single shared sentence-transformer body.
 """

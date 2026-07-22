@@ -1,8 +1,10 @@
 # tropes-removal-model
 
 ETNF parquet+zstd datalake, a hybrid trope detector (regex ONNX subgraph for
-~21 mechanical tropes + a SetFit few-shot classifier for ~12 semantic ones,
-merged into ONE ONNX model) + a FLAN-T5-small rewriter, and a pre-commit/CI
+~21 mechanical tropes + a SetFit few-shot classifier for ~10 semantic ones,
+merged into ONE ONNX model, plus a deterministic whole-document pass for 2
+more tropes that are mechanical but need cross-sentence state -- see
+runtime/cross_sentence.py) + a FLAN-T5-small rewriter, and a pre-commit/CI
 gate that flags AI-writing tropes (per https://tropes.fyi/directory) with an
 exact file/line span, the matching trope name + description, and a
 suggested rewrite for every finding.
@@ -17,7 +19,7 @@ scripts/seed_labels.py         -> data/sentence_trope_label/ (weak regex labels,
 scripts/synth_generate.py      -> same + data/sentence_rewrite/ (needs ANTHROPIC_API_KEY)
   or scripts/synth_seed_examples*.py (hand-authored fallback, no API key needed)
 scripts/build_datalake.py      -> data/classifier_{train,val,test}.parquet, data/rewrite_pairs/
-train_tropes.py                -> models/setfit_classifier/ (ONE multi-label SetFit model, ~12 semantic tropes only)
+train_tropes.py                -> models/setfit_classifier/ (ONE multi-label SetFit model, ~10 semantic tropes only)
 train_rewriter.py              -> models/rewriter/ (flan-t5-small seq2seq)
 export_onnx_tropes.py          -> onnx_tropes/merged_model.onnx (regex + SetFit, ONE model), onnx_rewriter/
 gate.py                        -> the CI/pre-commit entry point
@@ -34,18 +36,31 @@ it's small and hand-authored.
   anywhere in the lake -- parquet + zstd only.
 - Every trope flag must resolve to one sentence's exact char span + the
   trope's name/category/description, never a bare document-level score.
-- **Hybrid detection, not one model for all 33 tropes.** The ~21 tropes
-  that are lexical/structural/formatting patterns (Em-Dash Addiction, Delve
-  and Friends, Tricolon Abuse, etc.) are caught by deterministic
-  `RegexFullMatch` nodes (standard ONNX opset 20+, RE2 syntax, zero custom
-  ops) compiled from `scripts/seed_labels.py`'s own patterns -- see
-  `runtime/regex_onnx.py`, verified 0 mismatches vs Python's `re.search`
-  across 30,000 real sentences. Only the ~12 genuinely semantic tropes
-  (False Vulnerability, Grandiose Stakes Inflation, Invented Concept
-  Labels, etc.) go through a learned classifier -- no regex could ever
-  catch these since there's no lexical tell to match. Mirrors how
-  commercial writing-assistant products actually split this problem:
-  parsers/rules for mechanical checks, ML only for fuzzy judgment calls.
+- **Hybrid detection, not one model for all 33 tropes -- and not just a
+  binary split.** The ~21 tropes that are lexical/structural/formatting
+  patterns (Em-Dash Addiction, Delve and Friends, Tricolon Abuse, etc.) are
+  caught by deterministic `RegexFullMatch` nodes (standard ONNX opset 20+,
+  RE2 syntax, zero custom ops) compiled from `scripts/seed_labels.py`'s own
+  patterns -- see `runtime/regex_onnx.py`, verified 0 mismatches vs Python's
+  `re.search` across 30,000 real sentences. 2 more (Content Duplication,
+  Historical Analogy Stacking) are also mechanical, not fuzzy, but need
+  cross-sentence state a single-sentence regex can't hold ("does this exact
+  text recur elsewhere in the document", "are there 2+ historical
+  comparisons") -- these run as a plain deterministic whole-document pass in
+  `runtime/cross_sentence.py`, called once per file from `gate.py`, not
+  through the merged ONNX model. Only the remaining ~10 genuinely semantic
+  tropes (False Vulnerability, Grandiose Stakes Inflation, Invented Concept
+  Labels, etc.) go through a learned classifier -- no regex could ever catch
+  these since there's no lexical tell to match. Mirrors how commercial
+  writing-assistant products actually split this problem: parsers/rules for
+  mechanical checks (single- or multi-sentence), ML only for fuzzy judgment
+  calls. Lesson learned the hard way: two SetFit attempts at Content
+  Duplication/Historical Analogy Stacking (single-sentence, then a
+  windowed-context retry) both failed -- a pooled sentence embedding isn't
+  the right representation for "does this recur elsewhere," and naive text
+  windowing dilutes the very signal it's meant to add. Recognizing these as
+  mechanical-but-document-scoped instead of reaching for a bigger model was
+  the actual fix.
 - **SetFit, not full fine-tuning, for the semantic classifier.** SetFit
   (contrastive sentence-transformer fine-tuning + a lightweight multi-label
   head, `multi_target_strategy="one-vs-rest"`) is purpose-built for

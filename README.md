@@ -17,10 +17,13 @@ name and description, and a suggested rewrite for every finding.
    lexical/structural/formatting tropes (Em-Dash Addiction, Delve and
    Friends, etc.) are caught by deterministic regex compiled directly into
    the ONNX graph (`runtime/regex_onnx.py`) -- zero training data, verified
-   0 mismatches vs Python's `re.search` across 30,000 sentences. The
-   remaining ~12 genuinely semantic tropes (False Vulnerability, Grandiose
-   Stakes Inflation, etc.) go through a SetFit few-shot classifier, since
-   there's no lexical tell to write a regex for.
+   0 mismatches vs Python's `re.search` across 30,000 sentences. 2 more
+   (Content Duplication, Historical Analogy Stacking) are also mechanical
+   but need cross-sentence state, so they run as a deterministic
+   whole-document pass (`runtime/cross_sentence.py`) instead. The remaining
+   ~10 genuinely semantic tropes (False Vulnerability, Grandiose Stakes
+   Inflation, etc.) go through a SetFit few-shot classifier, since there's
+   no lexical tell to write a regex for.
 3. A fine-tuned FLAN-T5-small model suggests a trope-free rewrite for every
    sentence that fires.
 4. Both the detector and the rewriter are exported to ONNX -- the detector

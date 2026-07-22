@@ -7,13 +7,17 @@ The pre-commit/CI gate entry point.
     python gate.py --base-ref origin/main   # CI mode: diff against a base ref
 
 For every sentence in every target file, runs ONE merged ONNX model
-(onnx_tropes/merged_model.onnx -- see export_onnx_tropes.py) that scores all
-33 tropes in a single call: a deterministic regex branch for the ~21
-mechanical tropes, a distilbert classifier branch for the ~12 semantic ones.
-Any trope above --threshold becomes a Finding with an exact file/line/char
-span, the matching trope's name + category + description, and a suggested
-rewrite from the ONNX rewriter. Never emits a bare document-level score --
-every flag is pinned to one sentence and one named trope.
+(onnx_tropes/merged_model.onnx -- see export_onnx_tropes.py) that scores 31
+of the 33 tropes in a single call: a deterministic regex branch for the ~21
+mechanical tropes, a SetFit classifier branch for the ~10 genuinely semantic
+ones. The remaining 2 (Content Duplication, Historical Analogy Stacking) are
+document-scoped-but-still-mechanical -- neither a single-sentence regex nor
+a fuzzy judgment call -- and are handled by a separate deterministic
+whole-document pass, see runtime/cross_sentence.py. Any trope above
+--threshold becomes a Finding with an exact file/line/char span, the
+matching trope's name + category + description, and a suggested rewrite
+from the ONNX rewriter. Never emits a bare document-level score -- every
+flag is pinned to one sentence and one named trope.
 
 Exits non-zero (fails the gate) if total findings exceed --max-findings.
 """
@@ -25,6 +29,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from runtime.cross_sentence import CROSS_SENTENCE_TROPE_NAMES
+from runtime.cross_sentence import detect as detect_cross_sentence_tropes
 from runtime.datalake import read_tropes
 from runtime.infer import session_for
 from runtime.sentence_split import split_sentences
@@ -148,9 +154,19 @@ def scan_file(path, classifier, rewriter, threshold):
     findings = []
     with open(path, "r", encoding="utf-8", errors="ignore") as fh:
         text = fh.read()
-    for sentence in split_sentences(text):
+    sentences = list(split_sentences(text))
+
+    for sentence in sentences:
         scores = classifier.score_all(sentence.text)
         for trope_name, conf in scores.items():
+            # Content Duplication / Historical Analogy Stacking are handled
+            # below by a whole-document deterministic pass, not this
+            # per-sentence classifier call (see runtime/cross_sentence.py for
+            # why) -- score_all() still returns 0.0 for them (neither the
+            # regex nor SetFit branch of merged_model.onnx owns these
+            # columns), but skip explicitly rather than rely on that.
+            if trope_name in CROSS_SENTENCE_TROPE_NAMES:
+                continue
             if conf >= threshold:
                 findings.append(Finding(
                     file=path, line=line_of(sentence.char_start, text),
@@ -160,6 +176,19 @@ def scan_file(path, classifier, rewriter, threshold):
                     confidence=conf, description=classifier.description_of[trope_name],
                     suggested_rewrite=rewriter.rewrite(trope_name, sentence.text),
                 ))
+
+    cross_sentence_hits = detect_cross_sentence_tropes([s.text for s in sentences])
+    for i, trope_names in cross_sentence_hits.items():
+        sentence = sentences[i]
+        for trope_name in trope_names:
+            findings.append(Finding(
+                file=path, line=line_of(sentence.char_start, text),
+                char_start=sentence.char_start, char_end=sentence.char_end,
+                sentence_text=sentence.text, trope_name=trope_name,
+                category=classifier.category_of[trope_name],
+                confidence=1.0, description=classifier.description_of[trope_name],
+                suggested_rewrite=rewriter.rewrite(trope_name, sentence.text),
+            ))
     return findings
 
 

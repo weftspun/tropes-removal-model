@@ -224,6 +224,59 @@ def _combine_regex_and_semantic(regex_model, semantic_model_padded, semantic_out
     return model
 
 
+def _export_setfit_classifier_to_onnx(model, output_path, opset):
+    """Export the SetFit differentiable-head classifier ourselves instead of
+    calling setfit.exporters.onnx.export_onnx(): that function's
+    OnnxSetFitModel wrapper only chains model_body._modules["0"] (transformer)
+    and ["1"] (pooling) before the head, silently dropping module "2"
+    (Normalize -- L2-normalizes the pooled embedding to unit length).
+    model.predict_proba() DOES apply Normalize (confirmed: embeddings from
+    model.model_body.encode() have norm 1.0), so the exported graph feeds the
+    classification head an unnormalized (larger-magnitude) embedding the head
+    was never trained on. Since the head is Linear(embedding) + bias, scaling
+    the embedding scales the weight-matrix term but not the bias, which is
+    why the resulting logits were correlated with but not a fixed
+    scale/offset of the correct ones -- confirmed by comparing raw torch vs
+    ONNX logits on a real sentence and finding a non-constant per-dimension
+    gap. This wrapper chains all three body modules, matching
+    model.predict_proba()'s real forward path exactly."""
+    import torch
+
+    class _Wrapper(torch.nn.Module):
+        def __init__(self, body, head):
+            super().__init__()
+            self.body = body
+            self.head = head
+
+        def forward(self, input_ids, attention_mask, token_type_ids):
+            features = {"input_ids": input_ids, "attention_mask": attention_mask,
+                        "token_type_ids": token_type_ids}
+            for module in self.body._modules.values():
+                features = module(features)
+            return self.head(features["sentence_embedding"])
+
+    body_transformer = model.model_body._modules["0"]
+    tokenizer = body_transformer.tokenizer
+    max_length = body_transformer.max_seq_length
+    dummy = tokenizer("It's a test.", max_length=max_length, padding="max_length",
+                       return_attention_mask=True, return_token_type_ids=True, return_tensors="pt")
+
+    wrapper = _Wrapper(model.model_body, model.model_head).eval().cpu()
+    dummy = {k: v.cpu() for k, v in dummy.items()}
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper, args=tuple(dummy.values()), f=output_path, opset_version=opset,
+            input_names=["input_ids", "attention_mask", "token_type_ids"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input_ids": {0: "batch_size", 1: "sequence"},
+                "attention_mask": {0: "batch_size", 1: "sequence"},
+                "token_type_ids": {0: "batch_size", 1: "sequence"},
+                "logits": {0: "batch_size"},
+            },
+        )
+
+
 def export_classifiers():
     from runtime.regex_onnx import MECHANICAL_TROPE_NAMES, build_regex_graph
 
@@ -243,7 +296,6 @@ def export_classifiers():
         return
 
     from setfit import SetFitModel
-    from setfit.exporters.onnx import export_onnx as setfit_export_onnx
 
     with open(os.path.join(CLASSIFIER_MODEL_DIR, "trope_order.txt"), encoding="utf-8") as fh:
         semantic_names = [line.strip() for line in fh if line.strip()]
@@ -251,7 +303,7 @@ def export_classifiers():
     model = SetFitModel.from_pretrained(CLASSIFIER_MODEL_DIR)
     clf_onnx_path = os.path.join(ONNX_TROPES_DIR, "setfit_classifier_raw.onnx")
     os.makedirs(ONNX_TROPES_DIR, exist_ok=True)
-    setfit_export_onnx(model.model_body, model.model_head, opset=14, output_path=clf_onnx_path)
+    _export_setfit_classifier_to_onnx(model, clf_onnx_path, opset=14)
 
     torch_probs = np.array(model.predict_proba([
         "This is an ordinary sentence.",

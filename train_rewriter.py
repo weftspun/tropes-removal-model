@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 K. S. Ernest (iFire) Lee
-"""
-Fine-tune google/flan-t5-small on data/rewrite_pairs/ (Hive-partitioned by
-trope_name) so one model
-serves all 33 tropes' rewrites, conditioned on a trope-name prefix (e.g.
-"remove em-dash addiction: <sentence>"). Plain HuggingFace Seq2SeqTrainer,
-not AutoGluon -- AutoMM targets classification/regression/NER, not
-open-ended generation, so this stage deliberately sits outside it. Being
-plain torch (not AutoGluon) also means this script, unlike train_tropes.py,
-actually gets Metal acceleration on a macOS runner: HF's Trainer picks up
-torch's MPS backend automatically when torch.backends.mps.is_available(),
-whereas AutoGluon's own docs say GPU/MPS isn't supported on macOS at all.
+"""Fine-tune google/flan-t5-small on data/rewrite_pairs/ (Hive-partitioned by
+violation_name) so one model serves all STE rewrites, conditioned on a
+violation-name prefix (e.g. "remove passive voice: <sentence>"). Plain
+HuggingFace Seq2SeqTrainer, not AutoGluon -- AutoMM targets
+classification/regression/NER, not open-ended generation, so this stage
+deliberately sits outside it. Being plain torch (not AutoGluon) also means
+this script actually gets Metal acceleration on a macOS runner: HF's Trainer
+picks up torch's MPS backend automatically when
+torch.backends.mps.is_available(), whereas AutoGluon's own docs say GPU/MPS
+isn't supported on macOS at all.
 
 TRAIN_BATCH_SIZE (env, default 16) lets the CI caller cap memory: the free
 macos-14 hosted runner has only 7GB RAM, so train-release.yml's

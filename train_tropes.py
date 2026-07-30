@@ -1,41 +1,34 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 K. S. Ernest (iFire) Lee
 """
-Train the semantic-trope classifier with SetFit (contrastive
-sentence-transformer fine-tuning + a lightweight multi-label head), not
-AutoGluon's full end-to-end fine-tune -- and only for the ~8 genuinely
-SEMANTIC tropes, not all 33.
+|Train the semantic STE-violation classifier with SetFit (contrastive
+sentence-transformer fine-tuning + a lightweight multi-label head) -- only
+for the ~8 genuinely SEMANTIC STE violations, not all categories.
 
 Why SetFit over full fine-tuning: SetFit is purpose-built for exactly this
 regime (few-shot text classification; the reference use case in its own
 docs is 8-16 examples/class). Full fine-tuning of a 66M-param backbone
 needs hundreds of examples per class to generalize instead of memorize;
 SetFit's contrastive-pair pretraining step gets useful signal out of far
-fewer labels because it's training a much smaller effective decision
-surface (a frozen-ish sentence embedding + a linear/logistic head), not
-updating every weight in a large encoder from scratch. Verified with a
-real smoke test on this repo's own data (2 tropes, 648 rows, 1 epoch):
-98.5% held-out accuracy and correct predictions on unseen sentences.
+fewer labels.
 
-Why only ~8 tropes, not ~12: the ~23 mechanical tropes (Em-Dash Addiction,
-Delve and Friends, Tricolon Abuse, etc.) already have a regex pattern in
-scripts/seed_labels.py that detects them deterministically -- see
-runtime/regex_onnx.py (verified 0 mismatches vs Python's re.search across
-30,000 real sentences). Spending labeled data on those would be solving
-something already solved exactly. Two more (Content Duplication, Historical
-Analogy Stacking) turned out to be document-scoped-but-still-mechanical, not
-genuinely fuzzy -- moved to a deterministic cross-sentence pass instead (see
-runtime/cross_sentence.py) after two SetFit variants (single-sentence, then
-a windowed-context retry) both failed to learn them reliably: a pooled
-sentence embedding just isn't the right representation for "does this recur
-elsewhere in the document." The rewriter (train_rewriter.py) is unaffected
-by any of this -- it still needs rewrite pairs for all 33, since suggesting
-a rewrite is a generation task regardless of how the trope was detected.
+Why only ~8 violations, not all: the ~18 mechanical STE violations (passive
+voice, semicolons, contractions, nominalizations, marketing adjectives,
+phrasal verbs, banned synonyms, modal hedges, "-ing" main verbs, stacked
+auxiliaries, missing articles, em-dashes, 3+ nouns in a row) already have a
+regex pattern in scripts/seed_labels.py that detects them deterministically
+-- see runtime/regex_onnx.py (verified 0 mismatches vs Python's re.search).
+Spending labeled data on those would be solving something already solved
+exactly. Two more (Content Duplication, Historical Analogy Stacking) are
+document-scoped-but-still-mechanical -- moved to a deterministic cross-sentence
+pass instead (see runtime/cross_sentence.py). The rewriter (train_rewriter.py)
+still needs rewrite pairs for all categories, since suggesting an STE-compliant
+rewrite is a generation task regardless of how the violation was detected.
 
 Output: models/setfit_classifier/ -- ONE multi-label SetFit model covering
-the ~8 remaining semantic tropes (not one predictor per trope), since
-SetFit's multi_target_strategy="one-vs-rest" natively handles co-occurring
-labels with a single shared sentence-transformer body.
+the ~8 remaining semantic STE violations (not one predictor per violation),
+since SetFit's multi_target_strategy="one-vs-rest" natively handles
+co-occurring labels with a single shared sentence-transformer body.
 """
 import os
 import sys
@@ -45,10 +38,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from runtime.cross_sentence import CROSS_SENTENCE_TROPE_NAMES
-from runtime.regex_onnx import MECHANICAL_TROPE_NAMES
+from runtime.cross_sentence import CROSS_SENTENCE_VIOLATION_NAMES
+from runtime.regex_onnx import MECHANICAL_VIOLATION_NAMES
 
-EXCLUDED_TROPE_NAMES = set(MECHANICAL_TROPE_NAMES) | set(CROSS_SENTENCE_TROPE_NAMES)
+EXCLUDED_TROPE_NAMES = set(MECHANICAL_VIOLATION_NAMES) | set(CROSS_SENTENCE_VIOLATION_NAMES)
 
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -71,8 +64,8 @@ def main():
     trope_names = [c[len("trope__"):] for c in label_cols]
 
     print(f"training ONE multi-label SetFit model for {len(label_cols)} semantic tropes "
-          f"on backbone={BACKBONE} ({len(MECHANICAL_TROPE_NAMES)} mechanical tropes handled by "
-          f"regex, see runtime/regex_onnx.py; {len(CROSS_SENTENCE_TROPE_NAMES)} document-scoped "
+          f"on backbone={BACKBONE} ({len(MECHANICAL_VIOLATION_NAMES)} mechanical violations handled by "
+          f"regex, see runtime/regex_onnx.py; {len(CROSS_SENTENCE_VIOLATION_NAMES)} document-scoped "
           "tropes handled deterministically, see runtime/cross_sentence.py)", flush=True)
 
     def build_dataset(df):

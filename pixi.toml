@@ -1,7 +1,7 @@
 [workspace]
 name = "tropes-removal-model"
 version = "0.1.0"
-description = "ETNF trope datalake, a hybrid regex+SetFit trope classifier + FLAN-T5 rewriter exported to ONNX, and a pre-commit/CI gate"
+description = "STE enforcement gate: hybrid regex+SetFit STE-violation detector + FLAN-T5 rewriter exported to ONNX, and a pre-commit/CI gate"
 channels = ["conda-forge"]
 platforms = ["win-64", "osx-arm64", "linux-64"]
 

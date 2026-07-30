@@ -1,18 +1,18 @@
 cff-version: 1.2.0
 message: "If you use this software or the datalake it builds, please cite it as below."
-title: "tropes-removal-model"
+title: "ste-enforcer"
 abstract: >-
-  A pre-commit/CI gate that detects AI-writing tropes (per tropes.fyi's
-  33-pattern catalog) in text, going hybrid: ~21 lexical/structural/
-  formatting tropes are caught by deterministic ONNX RegexFullMatch nodes
-  (zero training data, verified 0 mismatches vs Python's re.search across
-  30,000 real sentences), and ~12 genuinely semantic tropes by a SetFit
-  few-shot classifier (contrastive sentence-transformer fine-tuning + a
-  lightweight head, chosen for its sample efficiency over full end-to-end
-  fine-tuning). Both branches plus a FLAN-T5 rewriter are exported to ONNX,
-  backed by an Essential-Tuple-Normal-Form parquet+zstd datalake built from
-  public corpora (HC3, artem9k/ai-text-detection-pile, RAID) and
-  hand-authored synthetic examples covering all 33 catalog entries.
+  A pre-commit/CI gate that detects violations of ASD-STE100 Simplified
+  Technical English in prose files. Uses a hybrid detection approach: ~18
+  mechanical violations (passive voice, long sentences, semicolons,
+  contractions, nominalizations, marketing adjectives, phrasal verbs,
+  banned synonyms, modal hedges, etc.) are caught by deterministic ONNX
+  RegexFullMatch nodes (zero training data, verified 0 mismatches vs
+  Python's re.search), and ~8 genuinely semantic violations by a SetFit
+  few-shot classifier. Both branches plus a FLAN-T5 rewriter are exported
+  to ONNX, backed by an Essential-Tuple-Normal-Form parquet+zstd datalake.
+  NOT a certified ASD-STE100 checker. See https://asd-ste100.org for the
+  complete specification.
 authors:
   - family-names: Lee
     given-names: "K. S. Ernest (iFire)"
@@ -21,34 +21,20 @@ repository-code: "https://github.com/weftspun/tropes-removal-model"
 version: 0.1.0
 date-released: "2026-07-21"
 keywords:
-  - ai-generated-text-detection
+  - simplified-technical-english
+  - asd-ste100
+  - controlled-language
+  - technical-writing
   - setfit
   - onnx
   - pre-commit
   - text-classification
-  - few-shot-learning
 references:
-  - type: dataset
-    title: "HC3: How Close is ChatGPT to Human Experts? Comparison Corpus, Evaluation, and Detection"
-    authors:
-      - name: "Hello-SimpleAI"
-    url: "https://huggingface.co/datasets/Hello-SimpleAI/HC3"
-  - type: dataset
-    title: "ai-text-detection-pile"
-    authors:
-      - name: "artem9k"
-    url: "https://huggingface.co/datasets/artem9k/ai-text-detection-pile"
-  - type: dataset
-    title: "RAID: A Shared Benchmark for Robust Evaluation of Machine-Generated Text Detection"
-    authors:
-      - family-names: Dugan
-        given-names: Liam
-    url: "https://huggingface.co/datasets/liamdugan/raid"
   - type: generic
-    title: "AI Writing Tropes Directory"
+    title: "ASD-STE100 Simplified Technical English"
     authors:
-      - name: "tropes.fyi"
-    url: "https://tropes.fyi/directory"
+      - name: "ASD STE Maintenance Group (STEMG)"
+    url: "https://asd-ste100.org"
   - type: software
     title: "SetFit: Efficient Few-Shot Learning Without Prompts"
     authors:

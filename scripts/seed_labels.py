@@ -1,21 +1,23 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 K. S. Ernest (iFire) Lee
-"""
-Weak-label sentences in `sentence` against per-trope regex/keyword seeds
-derived directly from tropes.fyi's own example phrases, writing
-sentence_trope_label rows with label_source="seed-regex".
+"""Weak-label sentences in `sentence` against per-violation regex/keyword
+patterns derived from STE writing rules, writing sentence_trope_label rows
+with label_source="seed-regex".
 
-This is a TRAINING-DATA BOOTSTRAP ONLY. Per the "route all 33 tropes through
-the learned model" decision, none of this regex logic ships in gate.py --
-the runtime gate always goes through the ONNX classifier. These patterns
-exist only to give train_tropes.py a first pass of (noisy, low-confidence)
-positive labels to bootstrap from, on top of the higher-confidence synthetic
-pairs from scripts/synth_generate.py.
+This is a TRAINING-DATA BOOTSTRAP ONLY. None of this regex logic ships in
+gate.py -- the runtime gate always goes through the ONNX classifier. These
+patterns exist only to give train_tropes.py a first pass of (noisy,
+low-confidence) positive labels to bootstrap from, on top of the
+higher-confidence synthetic pairs from scripts/synth_generate.py.
 
-Only covers the lexical/structural tropes that are mechanically matchable;
-the purely semantic tone/composition tropes (e.g. False Vulnerability,
-Grandiose Stakes Inflation) get no seed-regex labels here and rely entirely
-on synthetic generation for positive examples.
+Only covers the mechanical violations that are matchable by pattern;
+the purely semantic ones (word choice, safety-critical clarity, etc.)
+get no seed-regex labels here and rely entirely on synthetic generation.
+
+RE2 NOTE: These patterns are compiled into ONNX RegexFullMatch nodes by
+runtime/regex_onnx.py. RE2 does NOT support \\u Unicode escapes (\\u2019,
+\\u2014) -- use the literal characters instead. Python's re module handles
+both forms, but the pattern string (.pattern) is what gets passed to RE2.
 """
 import re
 import sys
@@ -26,90 +28,60 @@ from runtime.datalake import SENTENCE_TROPE_LABEL_PATH, read_table, read_tropes,
 
 CONFIDENCE = 0.6  # weak/noisy signal; synthetic-gen labels are 1.0
 
-# trope name -> compiled regex matched against sentence text (case-insensitive)
+# Unicode characters used literally (not as \uXXXX escapes) for RE2 compatibility
+RIGHT_SINGLE_QUOTE = "\u2019"  # '
+EM_DASH = "\u2014"              # —
+
+# violation name -> compiled regex matched against sentence text (case-insensitive)
+# These detect violations of ASD-STE100 writing rules via mechanical patterns.
+# Not a complete STE checker -- see https://asd-ste100.org for the full spec.
 PATTERNS = {
-    "Delve and Friends": re.compile(
-        r"\b(delve|certainly!|utiliz|leverage|robust|streamline|harness(?:es|ing)?)\b", re.I),
-    "Tapestry and Landscape": re.compile(
-        r"\b(tapestry|landscape of|paradigm|synergy|ecosystem)\b", re.I),
-    "The Serves As Dodge": re.compile(
-        r"\b(serves as|stands as|marks (?:a|the))\b", re.I),
-    "Negative Parallelism": re.compile(
-        r"\bIt'?s not \b.{1,60}[.!?]\s*It'?s\b", re.I),
-    "Not X. Not Y. Just Z.": re.compile(
-        r"\bNot (?:a|an|\w+)\b.{1,40}\.\s*Not (?:a|an|\w+)\b.{1,40}\.\s*(?:Just|A)\b", re.I),
-    "The X? A Y.": re.compile(
-        r"\?\s*[A-Z][\w' ]{1,30}\.", re.I),
-    # Backreferences (\1) work in Python's `re` but RE2 (used by ONNX's
-    # RegexFullMatch, see runtime/regex_onnx.py) deliberately doesn't support
-    # them -- this pattern is unrolled into explicit alternation instead of
-    # \b(A|B|C)\b.*\b\1\b so the identical pattern object works in both engines.
-    "Anaphora Abuse": re.compile(
-        r"\bthey assume that\b.*\bthey assume that\b"
-        r"|\bthe truth is\b.*\bthe truth is\b"
-        r"|\bimagine a world\b.*\bimagine a world\b", re.I),
-    "Tricolon Abuse": re.compile(
-        r"\b\w+;\s*\w+\b.*\b\w+;\s*\w+\b", re.I),
-    "It's Worth Noting": re.compile(
-        r"\b(it'?s worth noting|importantly,|interestingly,|notably,)\b", re.I),
-    "False Ranges": re.compile(
-        r"\bfrom \w+ to \w+ to \w+\b", re.I),
-    "Here's the Kicker": re.compile(
-        r"\b(here'?s the kicker|here'?s the thing|here'?s where it gets interesting)\b", re.I),
-    "Think of It As": re.compile(
-        r"\bthink of it (?:as|like)\b", re.I),
-    "Imagine a World Where": re.compile(
-        r"\bimagine a world where\b", re.I),
-    "The Truth Is Simple": re.compile(
-        r"\bthe (?:truth|reality) is simpl", re.I),
-    "Let's Break This Down": re.compile(
-        r"\blet'?s break (?:this|it) down\b", re.I),
-    "Vague Attributions": re.compile(
-        r"\b(experts (?:say|argue|believe)|observers (?:say|note)|reports suggest)\b", re.I),
-    "Em-Dash Addiction": re.compile(r"—"),
-    "Bold-First Bullets": re.compile(r"^\s*[-*]\s+\*\*[^*]+\*\*", re.M),
-    # Arrows only, not curly quotes/en-dash -- those are normal published-prose
-    # typography and matching them was flooding this trope with false positives
-    # (59,914 hits, mostly ordinary smart quotes, before this fix).
-    "Unicode Decoration": re.compile(r"[→←↔⇒➜➔]"),
-    "The Signposted Conclusion": re.compile(
-        r"\b(in conclusion|to sum up|in summary)\b,?", re.I),
-    "Despite Its Challenges": re.compile(
-        r"\bdespite (?:its|these|the) challenges\b", re.I),
-    # Moved from the SetFit semantic classifier: purely structural
-    # (ordinal-opener sentences), no fuzzy judgment needed -- see
-    # CLAUDE.md's hybrid-detection note. This repo's own training data only
-    # ever used "The first/second/third X" (a narrow synthetic-generator
-    # artifact -- 92/92 positives, checked exhaustively), but real AI
-    # writing also opens enumeration sentences without "The" ("First, ...",
-    # "Firstly:", "Next, ...") and with higher ordinals, so the pattern
-    # covers that broader real-world shape, not just what this repo's
-    # synthetic data happened to generate. The bare (non-"The", non-"-ly")
-    # forms require an immediate comma/colon ("First," not just "First") to
-    # avoid matching ordinary sentences like "First impressions matter."
-    # Verified: 92/92 real positives matched, 2/500 random negatives
-    # false-fired (same negative sample as before broadening).
-    #
-    # "Superficial Analyses" (trailing present-participle clause) was tried
-    # here too and reverted: a real spot-check against 500 random negatives
-    # found ~6% false-fired on completely ordinary sentences ("...,
-    # providing high-quality market intelligence.", "..., sending the game
-    # into overtime.") -- the trope is about a trailing participial clause
-    # adding VAGUE, UNEARNED significance, and that grammatical shape is
-    # indistinguishable by regex from an ordinary factual clause using the
-    # same construction. Stayed on the SetFit classifier, where it was
-    # already at 1.0 recall/1.0 precision on held-out test data.
-    # Moved from the SetFit semantic classifier: the trope's own description
-    # names its exact lexical tell (same shape as "Delve and Friends" above).
-    # Verified: 93/93 real positives matched (0 missed).
-    "Quietly and Other Magic Adverbs": re.compile(
-        r"\b(?:quietly|deeply|fundamentally|remarkably)\b", re.I),
-    "Listicle in a Trench Coat": re.compile(
-        r"^\s*(?:"
-        r"The (?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|next|final|last) \w+"
-        r"|(?:Firstly|Secondly|Thirdly|Fourthly|Fifthly|Next|Finally|Lastly)\b"
-        r"|(?:First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth|Ninth|Tenth)\s*[,:]"
-        r")", re.I),
+    "Passive Voice": re.compile(
+        r"\b(?:am|is|are|was|were|be|been|being)\s+(?:\w+ed|done|made|sent|read|built|"
+        r"kept|held|set|put|run|written|shown|given|taken|found|got|gotten|seen|known|"
+        r"thrown|drawn)\b", re.I),
+    "Semicolon Used": re.compile(r";"),
+    "Contraction Used": re.compile(
+        r"\b\w+['" + RIGHT_SINGLE_QUOTE + r"](?:t|re|ve|ll|d|s|m)\b", re.I),
+    "Nominalization": re.compile(
+        r"\b(?:perform(?:s|ed)? an?|conduct(?:s|ed)? an?|provide(?:s|d)? a|carry out|"
+        r"carries out|make use of|makes use of)\b", re.I),
+    "Marketing Adjective": re.compile(
+        r"\b(?:seamless|seamlessly|robust|powerful|cutting-edge|effortless|effortlessly|"
+        r"world-class|next-generation|revolutionary|blazing|lightning-fast|elegant|"
+        r"turnkey|state-of-the-art|game-changing|battle-tested|enterprise-grade|"
+        r"supercharge|unlock|unleash)\b", re.I),
+    "Phrasal Verb": re.compile(
+        r"\b(?:spin up|spin down|reach out|dive into|dives into|diving into|"
+        r"kick off|kicks off|roll out|rolls out|tear down|ramp up|circle back|"
+        r"drill down|spun up|reaching out)\b", re.I),
+    "Banned Synonym": re.compile(
+        r"\b(?:begin|begins|commence|commences|initiate|initiates|originate|"
+        r"utilize|utilizes|utilizing|leverage|leverages|leveraging|facilitate|facilitates|"
+        r"ensure|ensures|ensuring|obtain|obtains|acquire|acquires|demonstrate|demonstrates|"
+        r"additionally|furthermore|moreover|"
+        r"utilization|aforementioned|henceforth|therein|"
+        r"whilst|amongst|numerous|myriad|plethora|"
+        r"prior to|subsequent to)\b", re.I),
+    "Modal Hedge": re.compile(
+        r"\b(?:it'?s? (?:is )?important to note|it should be noted|"
+        r"it is worth noting|please note that|as mentioned|as noted above)\b", re.I),
+    "-ing Main Verb": re.compile(
+        r"\b(?:am|is|are|was|were)\s+\w+ing\b", re.I),
+    "Stacked Auxiliaries": re.compile(
+        r"\b(?:may help to|may be able to|might be able to|can help to|"
+        r"could potentially|may possibly)\b", re.I),
+    "Missing Article": re.compile(
+        r"^\s*(?:Turn|Remove|Install|Open|Close|Press|Push|Pull|Lift|Lower|Insert|"
+        r"Connect|Disconnect|Set|Check|Make|Adjust|Apply|Move|Rotate|Slide|Tighten|"
+        r"Loosen|Replace|Clean|Fill|Drain)\s+[a-z]", re.M),
+    "Em-Dash Overuse": re.compile(EM_DASH),
+    "Three+ Nouns in a Row": re.compile(
+        r"\b\w+\s+\w+\s+\w+\s+\w+\b", re.I),
+    "Historical Analogy Stacking": re.compile(
+        r"\b[A-Z][\w&' -]{1,40}\s+(?:did not|didn'?t)\s+(?:build|invent|create|start|make)\b"),
+    "Content Duplication": re.compile(
+        r"^.{0,10}$", re.M),  # placeholder; real detection is cross-sentence in runtime/cross_sentence.py
 }
 
 LABEL_NAMESPACE = uuid.UUID("8b3c8f4e-8f0a-4c2e-8e2f-2c9b5b7b6a44")
@@ -134,9 +106,6 @@ def main():
                     "confidence": CONFIDENCE,
                 })
 
-    # Replace, not append: this pass is fully deterministic given the current
-    # corpus + patterns, so re-running after a regex fix must drop the old
-    # seed-regex rows rather than accumulate stale ones alongside the new.
     replace_rows(SENTENCE_TROPE_LABEL_PATH, "label_source", "seed-regex", rows)
     print(f"wrote {len(rows)} weak seed-regex labels", file=sys.stderr)
 

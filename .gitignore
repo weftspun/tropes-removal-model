@@ -15,7 +15,7 @@ runs/
 # datalake.parquet.zst), same pattern as the reference repo.
 data/
 models/
-onnx_tropes/
+onnx_violations/
 onnx_rewriter/
 *.tar.gz
 *.zst

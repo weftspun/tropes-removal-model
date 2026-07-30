@@ -1,10 +1,8 @@
-name: tropes-gate
+name: ste-gate
 
 # Fast path: PRs only run inference against the already-trained ONNX models,
 # never training. Restores the cached model (keyed on the training/export
-# scripts) or downloads it from the latest Release on a cache miss. Models
-# are trained locally (see CLAUDE.md) and published to a Release by hand --
-# there is no training GHA workflow.
+# scripts) or downloads it from the latest Release on a cache miss.
 
 on:
   pull_request:
@@ -27,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            onnx_tropes
+            onnx_violations
             onnx_rewriter
           key: models-v1-${{ hashFiles('train_tropes.py', 'train_rewriter.py', 'export_onnx_tropes.py', 'runtime/regex_onnx.py', 'scripts/seed_labels.py', 'seeds/trope.parquet') }}
 
@@ -51,12 +49,6 @@ jobs:
         if: always()
         run: cat gate_report.txt >> "$GITHUB_STEP_SUMMARY"
 
-  # Runs the same .pre-commit-config.yaml hooks a local `prek install` (or
-  # `pre-commit install`) runs, so CI and local dev never drift apart on
-  # what "passing" means -- the "gate" job above re-implements the diff-only
-  # check by hand (python gate.py --base-ref) for a tighter PR-diff-scoped
-  # run; this job is the parity check that the hook definition itself still
-  # works, over every markdown/text file in the repo.
   prek:
     runs-on: ubuntu-latest
     steps:
@@ -70,7 +62,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            onnx_tropes
+            onnx_violations
             onnx_rewriter
           key: models-v1-${{ hashFiles('train_tropes.py', 'train_rewriter.py', 'export_onnx_tropes.py', 'runtime/regex_onnx.py', 'scripts/seed_labels.py', 'seeds/trope.parquet') }}
 
